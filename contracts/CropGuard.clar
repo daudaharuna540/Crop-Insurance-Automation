@@ -11,6 +11,8 @@
 (define-constant ERR-INVALID-COVERAGE (err u108))
 (define-constant ERR-WEATHER-CONDITIONS-NOT-MET (err u109))
 (define-constant ERR-YIELD-THRESHOLD-NOT-MET (err u110))
+(define-constant ERR-POLICY-STILL-ACTIVE (err u111))
+(define-constant ERR-NO-PREVIOUS-POLICY (err u112))
 
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant MIN-PREMIUM u1000000)
@@ -23,6 +25,7 @@
 (define-data-var total-claims-paid uint u0)
 (define-data-var contract-balance uint u0)
 (define-data-var oracle-address (optional principal) none)
+(define-data-var total-renewals uint u0)
 
 (define-map policies
   { farmer: principal }
@@ -37,7 +40,8 @@
     longitude: int,
     yield-threshold: uint,
     weather-threshold: uint,
-    is-active: bool
+    is-active: bool,
+    renewal-count: uint
   }
 )
 
@@ -108,7 +112,8 @@
         longitude: longitude,
         yield-threshold: yield-threshold,
         weather-threshold: weather-threshold,
-        is-active: true
+        is-active: true,
+        renewal-count: u0
       }
     )
     (var-set total-policies-issued policy-id)
@@ -227,6 +232,45 @@
   )
 )
 
+(define-public (renew-policy
+  (coverage-amount uint)
+  (premium-amount uint)
+  (yield-threshold uint)
+  (weather-threshold uint))
+  (let (
+    (existing-policy (unwrap! (map-get? policies { farmer: tx-sender }) ERR-NO-PREVIOUS-POLICY))
+    (current-block stacks-block-height)
+    (new-policy-id (+ (var-get total-policies-issued) u1))
+    (new-end-block (+ current-block BLOCKS-PER-SEASON))
+  )
+    (asserts! (not (get is-active existing-policy)) ERR-POLICY-STILL-ACTIVE)
+    (asserts! (>= premium-amount MIN-PREMIUM) ERR-INVALID-PREMIUM)
+    (asserts! (and (>= coverage-amount MIN-COVERAGE) (<= coverage-amount MAX-COVERAGE)) ERR-INVALID-COVERAGE)
+    (try! (stx-transfer? premium-amount tx-sender (as-contract tx-sender)))
+    (map-set policies
+      { farmer: tx-sender }
+      {
+        policy-id: new-policy-id,
+        crop-type: (get crop-type existing-policy),
+        coverage-amount: coverage-amount,
+        premium-paid: premium-amount,
+        start-block: current-block,
+        end-block: new-end-block,
+        latitude: (get latitude existing-policy),
+        longitude: (get longitude existing-policy),
+        yield-threshold: yield-threshold,
+        weather-threshold: weather-threshold,
+        is-active: true,
+        renewal-count: (+ (get renewal-count existing-policy) u1)
+      }
+    )
+    (var-set total-policies-issued new-policy-id)
+    (var-set total-renewals (+ (var-get total-renewals) u1))
+    (var-set contract-balance (+ (var-get contract-balance) premium-amount))
+    (ok new-policy-id)
+  )
+)
+
 (define-public (cancel-policy)
   (let (
     (farmer-policy (unwrap! (map-get? policies { farmer: tx-sender }) ERR-POLICY-NOT-FOUND))
@@ -275,7 +319,8 @@
     total-policies: (var-get total-policies-issued),
     total-claims-paid: (var-get total-claims-paid),
     contract-balance: (var-get contract-balance),
-    oracle-address: (var-get oracle-address)
+    oracle-address: (var-get oracle-address),
+    total-renewals: (var-get total-renewals)
   }
 )
 
